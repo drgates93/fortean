@@ -2,6 +2,8 @@
 
 A cross-platform CLI tool for creating and managing Fortran-based scientific projects. Inspired by build systems like Cargo, Fortean offers a lightweight way to initialize, configure, build, and run modular Fortran projects using TOML config and automation.
 
+Currently only supports building a single target executable, with future support for more complicated builds.
+
 ---
 
 ### Features
