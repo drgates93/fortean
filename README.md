@@ -59,7 +59,6 @@ fortean run <project-name>      # Build and run the executable
 ├── lib/           # External libraries
 └── .cache/        # Hidden cache directory
 ```
-
 ---
 
 ### `project.toml` Example
@@ -89,6 +88,19 @@ deep = ["src"]
 [library]
 #source-libs = ["lib/test.lib"]
 ```
+
+### Search Directories for files
+
+```
+[search]
+deep = ["src"]
+#shallow = ["lib", "include"]
+```
+
+| TOML             | Description                        |
+| ----------------- | ---------------------------------- |
+| `deep    = ["src"]` | Comma separated list of directories to **recursively** search for files and add to the depedency graph|
+| `shallow = ["lib"]` | Comma separated list of directories to search for files and add to the depedency graph.|
 
 ### License
 
