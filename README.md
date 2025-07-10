@@ -4,7 +4,7 @@ A cross-platform CLI tool for creating and managing Fortran-based scientific pro
 
 ---
 
-### 📦 Features
+### Features
 
 * Initializes directory structure (`src`, `mod`, `obj`, etc.)
 * Copies template executables and build config files
@@ -47,7 +47,7 @@ fortean run <project-name>      # Build and run the executable
 
 ---
 
-### 🗂️ Directory Structure
+### Directory Structure
 
 ```
 <project-name>/
