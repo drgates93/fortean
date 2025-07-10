@@ -13,8 +13,7 @@ Currently only supports building a single target executable, with future support
 * Generates a `project.toml` for build configuration
 * Supports incremental and parallel builds
 * Cross-platform (Linux/Windows)
-* Lightweight, C-based implementation
-
+* Lightweight and Fast 
 ---
 
 ### Installation
