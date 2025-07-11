@@ -9,6 +9,7 @@
 #include "fortean_build.h"
 #include "fortean_cli_args.h"
 #include "fortean_helper_fn.h"
+#include "fortean_toml.h"
 
 #ifdef _WIN32
     #include <direct.h>
@@ -21,6 +22,8 @@
     #include <unistd.h>
     #include <libgen.h>
 #endif
+
+#define TOML_NAME "Fortean.toml"
 
 const char *get_executable_dir(void) {
     static char buffer[4096];
@@ -46,7 +49,7 @@ const char *get_executable_dir(void) {
 }
 
 // Directory list
-const char *dirs[] = { "src", "mod", "obj", "build", "data", "lib"};
+const char *dirs[] = { "src", "mod", "obj", "data", "lib", "bin"};
 const int num_dirs = sizeof(dirs) / sizeof(dirs[0]);
 
 const char *hidden_dirs[] = {".cache"};
@@ -151,7 +154,7 @@ void copy_template_files(const char *base_path) {
     //char dest_makefile[512];
     char dest_exe[512];
     //snprintf(dest_makefile, sizeof(dest_makefile), "%s%cmakefile", base_path, PATH_SEP);
-    snprintf(dest_exe, sizeof(dest_exe), "%s%cbuild%cmaketopologicf90.exe", base_path, PATH_SEP, PATH_SEP);
+    snprintf(dest_exe, sizeof(dest_exe), "%s%cbin%cmaketopologicf90.exe", base_path, PATH_SEP, PATH_SEP);
 
 
     //Need the absolute install path
@@ -171,26 +174,16 @@ int directory_exists(const char *path) {
     return (stat(path, &st) == 0 && S_ISDIR(st.st_mode));
 }
 
-int generate_project_toml(const char *project_name) {
-    char build_dir[256];
-    snprintf(build_dir, sizeof(build_dir), "%s/build", project_name);
+int file_exists_generic(char *filename) {
+  struct stat buffer;   
+  return (stat(filename, &buffer) == 0);
+}
 
-    // Ensure build directory exists
-    struct stat st = {0};
-    if (stat(build_dir, &st) == -1) {
-        if (MKDIR(project_name) != 0 && errno != EEXIST) {
-            print_error("Failed to create project directory.");
-            return -1;
-        }
-        if (MKDIR(build_dir) != 0 && errno != EEXIST) {
-            print_error("Failed to create build directory.");
-            return -1;
-        }
-    }
+int generate_project_toml(const char *project_name) {
 
     // Path to the project.toml file
     char toml_path[512];
-    snprintf(toml_path, sizeof(toml_path), "%s/project.toml", build_dir);
+    snprintf(toml_path, sizeof(toml_path), "%s%c%s", project_name,PATH_SEP,TOML_NAME);
 
     FILE *f = fopen(toml_path, "w");
     if (!f) {
@@ -201,7 +194,6 @@ int generate_project_toml(const char *project_name) {
     }
 
     fprintf(f,
-        "# Auto-generated TOML config for project: %s\n\n"
         "[build]\n"
         "target = \"%s\"\n"
         "compiler = \"gfortran\"\n\n"
@@ -218,12 +210,18 @@ int generate_project_toml(const char *project_name) {
         "deep = [\"src\"]\n"
         "#shallow = [\"lib\", \"include\"]\n\n"
         "[library]\n"
-        "#source-libs = [\"lib/test.lib\"]\n",
-        project_name, project_name
+        "#source-libs = [\"lib/test.lib\"]\n\n"
+        "[exclude]\n"
+        "#Requires the relative path from the Fortean.toml file.\n"
+        "#files = [\"src/some_file.f90\"] \n\n"
+        "[lib]\n"
+        "#Placed in the lib folder and only supports static linking with ar\n"
+        "#target = \"%s.lib\"\n",
+        project_name,project_name
     );
 
     fclose(f);
-    print_ok("Generated project.toml file successfully.");
+    print_ok("Generated Fortean.toml file successfully.");
     return 0;
 }
 
@@ -362,7 +360,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    if(argc < 3){
+    if(argc < 2){
         printf("Not enough cli arguments detected\n");
         return 0;
     }
@@ -372,6 +370,9 @@ int main(int argc, char *argv[]) {
 
     //Incremental build flag
     int incremental_build = 1;
+
+    //Build only a library flag
+    int lib_only = 0;
 
     //Project dir
     const char *project_dir;
@@ -417,12 +418,6 @@ int main(int argc, char *argv[]) {
 
     //Build command
     if (hashmap_contains_key_and_index(&args.args_map, "build", 1)) {
-        project_dir = return_key_with_no_dashes(&args.args_map,"build");
-        if(project_dir == NULL){
-            print_error("No valid project directory chosen with the build flag.");
-            print_error("Syntax is \"fortean build project\"");
-            return 1;
-        }
 
         //Check if we are doing a parallel build.
         if(hashmap_contains(&args.args_map, "-j")) parallel_build = 1;
@@ -432,8 +427,12 @@ int main(int argc, char *argv[]) {
             incremental_build = 0;
         }
 
+        //Check if we are building a lib only
+        if(hashmap_contains(&args.args_map, "--lib")) lib_only = 1;
+
+
         //Run the build
-        fortean_build_project_incremental(project_dir,parallel_build,incremental_build);
+        fortean_build_project_incremental(parallel_build,incremental_build,lib_only);
 
         //Check if we want to go through a makefile. This is deprecated now that everything works? 
         // if(hashmap_contains(&args.args_map, "-m")){
@@ -449,32 +448,64 @@ int main(int argc, char *argv[]) {
 
     //Run command
     if (hashmap_contains_key_and_index(&args.args_map, "run", 1)) {
-        project_dir = return_key_with_no_dashes(&args.args_map,"run");
-        if(project_dir == NULL){
-            print_error("No valid project directory chosen with the run flag.");
-            print_error("Syntax is \"fortean run project\"");
-            return 1;
+
+        //Load the toml file.
+        const char* toml_path = TOML_NAME;
+        fortean_toml_t cfg = {0};
+        if (fortean_toml_load(toml_path, &cfg) != 0) {
+            print_error("Failed to load project.toml.");
+            return -1;
         }
 
-            //Check if we are doing a parallel build.
+        const char *target = fortean_toml_get_string(&cfg, "build.target");
+        if (!target) {
+            print_error("Missing 'build.target' in config.");
+            fortean_toml_free(&cfg);
+            return -1;
+        }
+
+        //Check if we are doing a parallel build.
         if(hashmap_contains(&args.args_map, "-j")) parallel_build = 1;
 
-        //Check if we are allowing an incremental build.
+        //Check if we are allowing an incremental build or forcing a full rebuild.
         if(hashmap_contains(&args.args_map, "-r") || hashmap_contains(&args.args_map, "--rebuild") ){
             incremental_build = 0;
         }
 
         if(!hashmap_contains(&args.args_map, "--bin")){
-            fortean_build_project_incremental(project_dir,parallel_build,incremental_build);
+
+            //Then we may need a rebuild. The --bin flag JUST runs the current binary. 
+            //it does not rebuild or even consider if we need to. 
+            fortean_build_project_incremental(parallel_build,incremental_build,lib_only);
         }
-        chdir(project_dir);
+
         char exe[512];
         #ifdef _WIN32
-            snprintf(exe,sizeof(exe),"%s.exe",project_dir);
+            snprintf(exe,sizeof(exe),"%s.exe",target);
         #else
-            snprintf(exe,sizeof(exe),"%s",project_dir);
+            snprintf(exe,sizeof(exe),"%s",target);
         #endif
-        system(exe);
+
+        //Check if file exists first
+        if(file_exists_generic(exe)) {
+            system(exe);
+        }else{
+
+            //Rebuild the project from scratch.
+            incremental_build = 0;
+            parallel_build    = 1;
+            fortean_build_project_incremental(parallel_build,incremental_build,lib_only);
+
+            //Then check if the executable exists. If it does not, then print an error message. 
+            if(file_exists_generic(exe)){
+                system(exe);
+            }else{
+                char msg[256];
+                snprintf(msg,sizeof(msg),"Executable named %s not found",exe);
+                print_error(msg);
+                return -1;
+            }
+        }
 
         //Safely exit
         return 0;
