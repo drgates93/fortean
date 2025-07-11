@@ -31,10 +31,10 @@ install:
 		bash ./scripts/bash_install.sh; \
 	elif command -v powershell >/dev/null 2>&1; then \
 		echo "Bash not found. Trying PowerShell..."; \
-		powershell -ExecutionPolicy Bypass -File ./scripts/win_install.ps1; \
+		powershell -File ./scripts/win_install.ps1; \
 	elif command -v pwsh >/dev/null 2>&1; then \
 		echo "Bash not found. Using PowerShell Core..."; \
-		pwsh -ExecutionPolicy Bypass -File ./scripts/win_install.ps1; \
+		pwsh -File ./scripts/win_install.ps1; \
 	else \
 		echo "Neither Bash nor PowerShell was found. Cannot modify PATH."; \
 	fi
