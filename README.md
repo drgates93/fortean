@@ -112,9 +112,4 @@ deep = ["src"]
 | `shallow = ["lib"]` | Comma separated list of directories to search for files and add to the depedency graph.|
 
 ### License
-
 This project is licensed under the MIT License. See `LICENSE` for more information.
-
----
-
-Let me know if you want the `README.md` file saved or customized for Doxygen or GitHub Pages!
