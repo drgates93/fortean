@@ -45,6 +45,7 @@ fortean run <project-name>      # Build and run the executable
 | `-j`              | Enable parallel build              |
 | `-r`, `--rebuild` | Disable incremental build          |
 | `--bin`           | Skip build and run existing binary |
+| `--lib`           | Force build of library only        |
 
 ---
 
@@ -55,18 +56,17 @@ fortean run <project-name>      # Build and run the executable
 ├── src/           # Fortran source files
 ├── mod/           # Fortran modules (.mod)
 ├── obj/           # Object files (.o)
-├── build/         # Output binaries and config
+├── bin/           # Output binaries and config
 ├── data/          # Input or template files
-├── lib/           # External libraries
+├── lib/           # Libraries
 └── .cache/        # Hidden cache directory
+Fortean.toml
 ```
 ---
 
-### `project.toml` Example
+### `Fortean.toml` Example
 
 ```toml
-# Auto-generated TOML config for project: test
-
 [build]
 target = "test"
 compiler = "gfortran"
@@ -88,6 +88,14 @@ deep = ["src"]
 
 [library]
 #source-libs = ["lib/test.lib"]
+
+[exclude]
+#Requires the relative path from the Fortean.toml file.
+#files = ["src/some_file.f90"] 
+
+[lib]
+#Placed in the lib folder and only supports static linking with ar
+#target = "test.lib"
 ```
 
 ### Search Directories for files
