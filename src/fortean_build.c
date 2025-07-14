@@ -50,6 +50,16 @@ static int dir_exists(const char *path) {
 #endif
 
 
+//This allows for nested src files in any number of directories
+//to be parsed into just the filename and thus we can put them in the
+//object directory. We only rebuild if the src changes, not the obj. 
+char *get_last_path_segment(const char *path) {
+    const char *end = path + strlen(path);
+    const char *p = end;
+    while (p > path && *(p - 1) != '/' && *(p - 1) != '\\') p--;
+    return strdup(p); 
+}
+
 // Worker thread: runs system() on a single command string
 void compile_system_worker(void *arg) {
     char *cmd = (char *)arg;
@@ -98,8 +108,8 @@ static char *run_command_capture(const char *cmd) {
     return buffer;
 }
 
-// Helper: add flag to unique list if not already there
-static int add_unique_flag(char ***list, int *count, const char *flag) {
+// Add flag to unique list if not already there
+int add_unique_flag(char ***list, int *count, const char *flag) {
     for (int i = 0; i < *count; i++) {
         if (strcmp((*list)[i], flag) == 0) {
             return 0; // already present
@@ -114,7 +124,7 @@ static int add_unique_flag(char ***list, int *count, const char *flag) {
     return 0;
 }
 
-// Helper: case-insensitive string compare for extension match
+// Case-insensitive string compare for extension match
 int strcmp_case_insensitive(const char *ext, const char *target) {
     while (*ext && *target) {
         if (tolower((unsigned char)*ext) != tolower((unsigned char)*target)) {
@@ -133,39 +143,51 @@ static void free_string_list(char **list, int count) {
     free(list);
 }
 
-int fortean_build_project_incremental(const char *project_dir, const int parallel_build, const int incremental_build_override) {
-    if (!project_dir) {
-        print_error("Project directory is NULL.");
+
+//Libary build
+int build_library(char** sources, int src_count, const char* obj_dir, const char* lib_name){
+    char ar_cmd[4096] = {0};
+    size_t ar_pos = 0;
+
+    ar_pos += snprintf(ar_cmd + ar_pos, sizeof(ar_cmd) - ar_pos, "ar rcs %s%c%s ","lib",PATH_SEP,lib_name);
+
+    for (int i = 0; i < src_count; i++) {
+        const char *src      = sources[i];
+        const char *rel_path = get_last_path_segment(src);
+        char *ext = strrchr(rel_path, '.');
+        if (ext && (strcmp_case_insensitive(ext, ".f90") == 0 
+                ||  strcmp_case_insensitive(ext, ".for") == 0
+                ||  strcmp_case_insensitive(ext, ".f")   == 0
+                ||  strcmp_case_insensitive(ext, ".f77") == 0)){
+            *ext = '\0';
+        }
+
+        //Write the "object" to the obj directory. For simplified building, 
+        //we eliminate the relative path to the src in the obj dir and link against
+        //just a list of all .o files we need in one place. This is much cleaner. 
+        char obj_path[512];
+        snprintf(obj_path, sizeof(obj_path), "%s%c%s.o", obj_dir, PATH_SEP, rel_path);
+        ar_pos += snprintf(ar_cmd + ar_pos, sizeof(ar_cmd) - ar_pos, " %s", obj_path);
+    }
+    print_info(ar_cmd);
+    int ret = system(ar_cmd);
+    if (ret != 0) {
+        print_error("Linking failed.");
         return -1;
     }
+    return 0;
+}
 
-    char build_dir[512];
-    snprintf(build_dir, sizeof(build_dir), "%s%cbuild", project_dir, PATH_SEP);
+int fortean_build_project_incremental(const int parallel_build, const int incremental_build_override, const int lib_only) {
 
-    if (!dir_exists(build_dir)) {
-        snprintf(build_dir, sizeof(build_dir), "build");
-        if (!dir_exists(build_dir)) {
-            print_error("Build directory does not exist.");
-            return -1;
-        }
-    }
-
-    int incremental_build  = 0;
-    char cache_path[512];
-    snprintf(cache_path, sizeof(cache_path), "%s%c%s",project_dir,PATH_SEP,hash_cache_file);
-    if(!file_exists(cache_path)){
-        //Check if it's local instead
-        incremental_build = file_exists(hash_cache_file);
-    }else{
-        incremental_build = 1;
-    }
+    //Check if we can do an incremental build.
+    int incremental_build = file_exists(hash_cache_file);
 
     //If we allow the override, then we want to rebuild all, so incremental build is disabled.
     if(incremental_build_override == 0) incremental_build = 0;
 
-    char toml_path[512];
-    snprintf(toml_path, sizeof(toml_path), "%s%cproject.toml", build_dir,PATH_SEP);
-
+    //Load the toml file.
+    const char* toml_path = "Fortean.toml";
     fortean_toml_t cfg = {0};
     if (fortean_toml_load(toml_path, &cfg) != 0) {
         print_error("Failed to load project.toml.");
@@ -180,7 +202,10 @@ int fortean_build_project_incremental(const char *project_dir, const int paralle
     }
 
     char *compiler = (char *)fortean_toml_get_string(&cfg, "build.compiler");
-    if (!compiler) compiler = "gfortran";
+    if (!compiler) {
+        print_error("Invalid compiler selected");
+        return -1;
+    }
 
     char **flags_array = fortean_toml_get_array(&cfg, "build.flags");
     if (!flags_array) {
@@ -195,7 +220,7 @@ int fortean_build_project_incremental(const char *project_dir, const int paralle
 
     for (int i = 0; flags_array[i]; i++) {
         if (add_unique_flag(&unique_flags, &unique_count, flags_array[i]) != 0) {
-            print_error("Memory error adding flag.");
+            print_error("Memory error adding flags to list");
             goto cleanup_arrays;
         }
     }
@@ -218,10 +243,7 @@ int fortean_build_project_incremental(const char *project_dir, const int paralle
         if (i < unique_count - 1) strcat(flags_str, " ");
     }
 
-    char old_dir[PATH_MAX];
-    getcwd(old_dir, sizeof(old_dir));
-    chdir(project_dir);
-
+    //Load the location to place the obj and mod files. 
     const char *obj_dir = fortean_toml_get_string(&cfg, "build.obj_dir");
     const char *mod_dir = fortean_toml_get_string(&cfg, "build.mod_dir");
 
@@ -239,18 +261,16 @@ int fortean_build_project_incremental(const char *project_dir, const int paralle
         goto cleanup_flags_str;
     }
 
-    char **deep_dirs = fortean_toml_get_array(&cfg, "search.deep");
+    char **deep_dirs    = fortean_toml_get_array(&cfg, "search.deep");
     char **shallow_dirs = fortean_toml_get_array(&cfg, "search.shallow");
 
-    if (!deep_dirs) deep_dirs = NULL;
-    if (!shallow_dirs) shallow_dirs = NULL;
-
+    //Build the command for the maketopologicf90 call. 
+    //This will be a loop when we support multiple binaries. 
     char maketop_cmd[1024] = {0};
-
 #ifdef _WIN32
-    strcat(maketop_cmd, "build\\maketopologicf90.exe");
+    strcat(maketop_cmd, "bin\\maketopologicf90.exe");
 #else
-    strcat(maketop_cmd, "./build/maketopologicf90.exe");
+    strcat(maketop_cmd, "./bin/maketopologicf90.exe");
 #endif
     if (deep_dirs) {
         strcat(maketop_cmd, " -D ");
@@ -279,30 +299,50 @@ int fortean_build_project_incremental(const char *project_dir, const int paralle
         goto cleanup_search_arrays;
     }
 
+    
+    //Now we get the exclusion list (if it exists)
+    FileNode*  exclusion_map[HASH_TABLE_SIZE]  = {NULL};
+    char **exclude_files = fortean_toml_get_array(&cfg, "exclude.files");
+    if(exclude_files){
+        for(int i = 0; exclude_files[i]; i++){
+            insert_node(exclude_files[i],exclusion_map);
+        }
+    }
+
+
+    //From the list of topologically sorted files, we need to parse them
+    //properly as they are a single string. 
     char *line     = strtok(topo_src, "\n");
     char **sources = NULL;
     int src_count  = 0;
     char **tmp     = NULL;
     while (line) {
-        tmp = realloc(sources, sizeof(char *) * (src_count + 1));
+        tmp = realloc(sources, sizeof(char *)*(src_count + 1));
         if (!tmp) {
             print_error("Memory allocation error.");
             free(topo_src);
             goto cleanup_sources;
         }
+                
+        //Skip if this file is in the exclusion list
+        if(node_is_in_the_hashmap(line,exclusion_map)){
+            line = strtok(NULL, "\n");
+            continue;
+        }
+
+        //Otherwise, add to the list of sources!
         sources = tmp;
         sources[src_count] = strdup(line);
         src_count++;
         line = strtok(NULL, "\n");
     }
 
-
-    //For the incremental build, we parse the files!
+    //For the incremental build, we parse the depenecy files and rebuild. 
     if(incremental_build){
         strcat(maketop_cmd," -m");
         char *topo_make = run_command_capture(maketop_cmd);
 
-        //Open the depedency list.
+        //Write the new list to a file and then reload it. 
         FILE* depedency_chain = fopen(deps_file ,"w+");
         fprintf(depedency_chain,"%s",topo_make);
         fclose(depedency_chain);
@@ -310,7 +350,7 @@ int fortean_build_project_incremental(const char *project_dir, const int paralle
         //Parse the dependency file first (we always need it)
         int res = parse_dependency_file(deps_file,cur_map);
         if(!res){
-            print_error("Failed to make hash table of dependency\n");
+            print_error("Failed to make hash table of dependency graph\n");
             return -1;
         }
             
@@ -341,20 +381,25 @@ int fortean_build_project_incremental(const char *project_dir, const int paralle
             }
         }
 
+        //Rebuild required if the rebuild list is not empty.
+        //Otherwise, we jump to our memory cleanup.
+        if(rebuild_list == NULL && lib_only == 0) goto cleanup_sources;
+
         //Compile each source only if it changed and needs to be rebuilt. 
-        //If we want to support parallel build, this is the place to modify. 
-        //Need to convert this linked list of rebuild items to an array and then parse the 
-        //work out. Trivial for the base case since it's already an array. 
         FileNode *curr = rebuild_list;
         while(curr){
             const char *src = curr->filename;
-            const char *rel_path = src + strlen("src") + 1;
 
-            char rel_path_no_ext[512];
-            strncpy(rel_path_no_ext, rel_path, sizeof(rel_path_no_ext));
-            rel_path_no_ext[sizeof(rel_path_no_ext) - 1] = '\0';
+            //Check the exclusion list here. This can break a build,
+            //but that is the correct behavior if asked. 
+            if(node_is_in_the_hashmap(src,exclusion_map)) {
+                curr = curr->next;
+                continue;
+            }
 
-            char *ext = strrchr(rel_path_no_ext, '.');
+            //Otherwise continue on 
+            const char *rel_path = get_last_path_segment(src);
+            char *ext = strrchr(rel_path, '.');
             if (ext && (strcmp_case_insensitive(ext, ".f90") == 0 
                     ||  strcmp_case_insensitive(ext, ".for") == 0
                     ||  strcmp_case_insensitive(ext, ".f")   == 0
@@ -363,25 +408,29 @@ int fortean_build_project_incremental(const char *project_dir, const int paralle
             }
 
             char obj_file[1024];
-            snprintf(obj_file, sizeof(obj_file), "%s/%s.o", obj_dir, rel_path_no_ext);
+            snprintf(obj_file, sizeof(obj_file), "%s%c%s.o", obj_dir, PATH_SEP, rel_path);
 
             char compile_cmd[2048];
-
             snprintf(compile_cmd, sizeof(compile_cmd), "%s %s -J%s -c %s -o %s",
-                compiler, flags_str, mod_dir, src, obj_file);
+                     compiler, flags_str, mod_dir, src, obj_file);
 
             print_info(compile_cmd);
             int ret = system(compile_cmd);
             if (ret != 0) {
                 print_error("Compilation failed.");
+                
+                //Free the topo make and rebuild list.
+                free(topo_make);
+                free(rebuild_list);
+
+                //Cleanup
                 goto cleanup_sources;
             }
-
             //Next node
             curr = curr->next;
         }
 
-        //Free the topo make and rebuild list.
+        //Free the topo_make here and then free the rebuild list. 
         free(topo_make);
         free(rebuild_list);
     }else{
@@ -389,14 +438,9 @@ int fortean_build_project_incremental(const char *project_dir, const int paralle
         thread_t *threads;
         if(parallel_build) threads = (thread_t*)malloc(src_count*sizeof(thread_t));
         for (int i = 0; i < src_count; i++) {
-            const char *src = sources[i];
-            const char *rel_path = src + strlen("src") + 1;
-
-            char rel_path_no_ext[512];
-            strncpy(rel_path_no_ext, rel_path, sizeof(rel_path_no_ext));
-            rel_path_no_ext[sizeof(rel_path_no_ext) - 1] = '\0';
-
-            char *ext = strrchr(rel_path_no_ext, '.');
+            const char *src      = sources[i];
+            const char *rel_path = get_last_path_segment(src);
+            char *ext = strrchr(rel_path, '.');
             if (ext && (strcmp_case_insensitive(ext, ".f90") == 0 
                     ||  strcmp_case_insensitive(ext, ".for") == 0
                     ||  strcmp_case_insensitive(ext, ".f")   == 0
@@ -405,12 +449,11 @@ int fortean_build_project_incremental(const char *project_dir, const int paralle
             }
 
             char obj_file[1024];
-            snprintf(obj_file, sizeof(obj_file), "%s/%s.o", obj_dir, rel_path_no_ext);
+            snprintf(obj_file, sizeof(obj_file), "%s%c%s.o", obj_dir, PATH_SEP, rel_path);
 
             char compile_cmd[2048];
-
             snprintf(compile_cmd, sizeof(compile_cmd), "%s %s -J%s -c %s -o %s",
-                compiler, flags_str, mod_dir, src, obj_file);
+                     compiler, flags_str, mod_dir, src, obj_file);
 
             if(!parallel_build){
                 print_info(compile_cmd);
@@ -436,6 +479,25 @@ int fortean_build_project_incremental(const char *project_dir, const int paralle
         }
     }
 
+
+    //Check if we are building a library or not.
+    const char* lib = fortean_toml_get_string(&cfg, "lib.target");
+    if(lib != NULL) {
+        if(build_library(sources,src_count,obj_dir,lib) == -1){
+            print_error("Failed to link library. Check if ar is installed and if the paths are correct.");
+            return -1;
+        }
+
+        //If lib only, we skip linking the executable.
+        if(lib_only) goto skip_linking;
+    }else{
+        if(lib_only){
+            print_error("No target lib found in Fortean.toml");
+            return -1;
+        }
+    }
+
+
     // Link
     char link_cmd[4096] = {0};
     size_t link_pos = 0;
@@ -443,21 +505,21 @@ int fortean_build_project_incremental(const char *project_dir, const int paralle
     link_pos += snprintf(link_cmd + link_pos, sizeof(link_cmd) - link_pos, "%s %s", compiler, flags_str);
 
     for (int i = 0; i < src_count; i++) {
-        const char *src = sources[i];
-        const char *rel_path = src + strlen("src") + 1;
-
-        char rel_path_no_ext[512];
-        strncpy(rel_path_no_ext, rel_path, sizeof(rel_path_no_ext));
-        rel_path_no_ext[sizeof(rel_path_no_ext) - 1] = '\0';
-
-        char *ext = strrchr(rel_path_no_ext, '.');
-        if (ext && (strcmp(ext, ".f90") == 0 || strcmp(ext, ".for") == 0)) {
+        const char *src      = sources[i];
+        const char *rel_path = get_last_path_segment(src);
+        char *ext = strrchr(rel_path, '.');
+        if (ext && (strcmp_case_insensitive(ext, ".f90") == 0 
+                ||  strcmp_case_insensitive(ext, ".for") == 0
+                ||  strcmp_case_insensitive(ext, ".f")   == 0
+                ||  strcmp_case_insensitive(ext, ".f77") == 0)){
             *ext = '\0';
         }
 
+        //Write the "object" to the obj directory. For simplified building, 
+        //we eliminate the relative path to the src in the obj dir and link against
+        //just a list of all .o files we need in one place. This is much cleaner. 
         char obj_path[512];
-        snprintf(obj_path, sizeof(obj_path), "%s/%s.o", obj_dir, rel_path_no_ext);
-
+        snprintf(obj_path, sizeof(obj_path), "%s%c%s.o", obj_dir, PATH_SEP, rel_path);
         link_pos += snprintf(link_cmd + link_pos, sizeof(link_cmd) - link_pos, " %s", obj_path);
     }
 
@@ -480,8 +542,13 @@ int fortean_build_project_incremental(const char *project_dir, const int paralle
         goto cleanup_sources;
     }
 
+
+    skip_linking:
     print_ok("Built Successfully");
 
+
+    //If we aren't on an incremental build, we need to dump everything
+    //to the .cache files here. 
     if(!incremental_build){
          //For the incremental build, we parse the files!
         strcat(maketop_cmd," -m");
@@ -501,6 +568,8 @@ int fortean_build_project_incremental(const char *project_dir, const int paralle
 
     }
 
+
+    //GOTO's for freeing the memory. Basically defer, but obviously C doesn't have a real defer. 
 cleanup_sources:
     if (sources) {
         for (int i = 0; i < src_count; i++) free(sources[i]);
@@ -526,13 +595,12 @@ cleanup_arrays:
     free(flags_array);
 
     free_string_list(unique_flags, unique_count);
-
     fortean_toml_free(&cfg);
-    chdir(old_dir);
 
-    
+    //Free the hashmaps.
     free_all(cur_map);
     free_prev_hash_table(prev_map);
+    free_all(exclusion_map);
 
     return 0;
 }

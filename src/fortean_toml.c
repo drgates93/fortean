@@ -123,3 +123,52 @@ const char *fortean_toml_get_string(fortean_toml_t *cfg, const char *key_path) {
     if (val.ok) return val.u.s;
     return NULL;
 }
+
+char ***extract_string_matrix(toml_table_t* cfg, const char* key, int* rows, int* cols) {
+    if (!cfg || !key || !rows || !cols) return NULL;
+
+    toml_array_t* matrix = toml_array_in(cfg, key);
+    if (!matrix) {
+        fprintf(stderr, "Key '%s' not found or not an array.\n", key);
+        return NULL;
+    }
+
+    int outer_len = toml_array_nelem(matrix);
+    if (outer_len == 0) return NULL;
+
+    // Assume all inner arrays have the same number of elements
+    toml_array_t* first_row = toml_array_at(matrix, 0);
+    if (!first_row) return NULL;
+
+    int inner_len = toml_array_nelem(first_row);
+    if (inner_len == 0) return NULL;
+
+    char*** result = malloc(outer_len * sizeof(char**));
+    if (!result) return NULL;
+
+    for (int i = 0; i < outer_len; i++) {
+        toml_array_t* inner = toml_array_at(matrix, i);
+        if (!inner) {
+            fprintf(stderr, "matrix[%d] is not an array.\n", i);
+            result[i] = NULL;
+            continue;
+        }
+
+        const char* value = NULL;
+        result[i] = malloc(inner_len * sizeof(char*));
+        for (int j = 0; j < inner_len; j++) {
+            value = NULL;
+            toml_datum_t val = toml_string_at(inner, j);
+            if (val.ok) value = val.u.s;
+            if (value) {
+                result[i][j] = strdup(value); // copy to avoid ownership issues
+            } else {
+                result[i][j] = NULL;
+            }
+        }
+    }
+
+    *rows = outer_len;
+    *cols = inner_len;
+    return result;
+}

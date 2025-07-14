@@ -11,3 +11,7 @@ void print_info(const char *msg) {
 void print_error(const char *msg) {
     fprintf(stderr, "%s[ERROR]%s  %s\n", COLOR_RED, COLOR_RESET, msg);
 }
+
+void print_test(const char *msg) {
+    printf("%s[TEST]%s  %s\n", COLOR_BLUE, COLOR_RESET, msg);
+}

@@ -5,7 +5,7 @@
 #include <errno.h>
 
 //Fortean files
-#include "levenshtein.h"
+#include "fortean_levenshtein.h"
 #include "fortean_build.h"
 #include "fortean_cli_args.h"
 #include "fortean_helper_fn.h"
@@ -379,7 +379,9 @@ int main(int argc, char *argv[]) {
 
     //New Command
     if (hashmap_contains_key_and_index(&args.args_map, "new", 1)) {
-        project_dir = return_key_with_no_dashes(&args.args_map,"new");
+
+        int new_index = return_index_for_key(&args.args_map, "new");
+        project_dir   = return_key_for_index(&args.args_map, new_index+1);
         if(project_dir == NULL){
             print_error("No valid project directory chosen with the new flag.");
             print_error("Syntax is \"fortean new project\"");
@@ -477,6 +479,15 @@ int main(int argc, char *argv[]) {
             //Then we may need a rebuild. The --bin flag JUST runs the current binary. 
             //it does not rebuild or even consider if we need to. 
             fortean_build_project_incremental(parallel_build,incremental_build,lib_only);
+        }else{
+
+            //Target a specific binary name in the top level directory of the project. 
+            //Might be the bin folder later on. 
+            int bin_index         = return_index_for_key(&args.args_map, "--bin");
+            const char* exe_name  = return_key_for_index(&args.args_map, bin_index+1);
+            if(exe_name != NULL){
+                target = exe_name;
+            }
         }
 
         char exe[512];
@@ -510,7 +521,5 @@ int main(int argc, char *argv[]) {
         //Safely exit
         return 0;
     }
-
-    suggestClosestWord(argv[1],dictionary,dictionary_size);
     return 1;
 }

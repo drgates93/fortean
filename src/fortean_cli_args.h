@@ -35,8 +35,8 @@ int hashmap_contains_key_and_index(hashmap_t *map, const char *key, const int id
 //Return key for a given index in the hashmap
 const char* return_key_for_index(hashmap_t *map, const int idx);
 
-//Return key that has no dashes and skips the input value key.
-const char* return_key_with_no_dashes(hashmap_t *map, const char* key);
+//Return index for a given key in the hashmap
+int return_index_for_key(hashmap_t *map, const char* query);
 
 // Free all memory used by hashmap
 void hashmap_free(hashmap_t *map);

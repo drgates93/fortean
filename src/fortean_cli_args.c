@@ -1,5 +1,6 @@
 #include "fortean_cli_args.h"
 #include "fortean_helper_fn.h"
+#include "fortean_levenshtein.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -92,19 +93,19 @@ const char* return_key_for_index(hashmap_t *map, const int idx){
     return NULL;
 }
 
-//Lookup specific key in the hashmap that does not match the input and does not contain dashes.
-const char* return_key_with_no_dashes(hashmap_t *map, const char* key){
+//Lookup specific index in the hashmap 
+int return_index_for_key(hashmap_t *map, const char* query){
     for (int i = 0; i < HASHMAP_SIZE; i++) {
         if(map->buckets[i] == NULL) continue;
         kvpair_t *pair = map->buckets[i];
         while(pair){
-            if(strstr(pair->key,"-") == NULL && strcmp(pair->key,key) != 0){
-                return pair->key;
+            if(strcmp(pair->key,query) == 0){
+                return pair->idx;
             }
             pair = pair->next;
         }
     }
-    return NULL;
+    return -1;
 }
 
 void hashmap_free(hashmap_t *map) {
@@ -135,6 +136,13 @@ void cli_args_free(cli_args_t *args) {
 int cli_args_parse(cli_args_t *args, int argc, char **argv) {
     if (!args || !argv) return -1;
 
+    //Load the Trie
+    TrieNode *root = alloc_node();
+    loadDictionary(root); 
+
+
+    //Check if the next item is a name for the --bin flag. No suggestion needed.
+    int bin_check = 0;
     for (int i = 1; i < argc; i++) {
         size_t arg_len = strnlen(argv[i], MAX_ARG_LEN + 1);
         if (arg_len > MAX_ARG_LEN) {
@@ -143,9 +151,19 @@ int cli_args_parse(cli_args_t *args, int argc, char **argv) {
             print_error(msg);
             return -1;
         }
+
+        //Special case for after --bin for a specifc name and after new
+        if(strcmp(argv[i],"--bin")) bin_check = 1;
+        if(!bin_check) suggest_closest_word_fuzzy(root,argv[i]);
+
+        // if(suggest_closest_word_fuzzy_linear(argv[i]) == 1){
+        //     exit(1);
+        // }
         if (hashmap_put(&args->args_map, argv[i], i) != 0) {
             return -1;
         }
     }
+
+    //levenshtein_timing(100);
     return 0;
 }

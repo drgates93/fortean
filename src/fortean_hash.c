@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "fortean_hash.h"
+#include "fortean_helper_fn.h"
 
 #define MAX_LINE 1024
 #define HASH_TABLE_SIZE 1024
@@ -106,6 +107,23 @@ void add_dependent(FileNode *file, const char *dependent) {
     file->dependents = newnode;
 }
 
+//Simple check if a node is in the hashmap already. 
+int node_is_in_the_hashmap(const char *filename, FileNode *hash_table[]){
+    FileNode *node = find_file_node(filename, hash_table);
+    return !(node == NULL);
+}
+
+//Insert node
+void insert_node(const char *filename, FileNode *hash_table[]) {
+    FileNode *node = find_file_node(filename, hash_table);
+    if (node) return;
+    node = new_file_node(filename);
+    unsigned int index = str_hash(filename);
+    node->next = hash_table[index];
+    hash_table[index] = node;
+    return;
+}
+
 // Parse a dependency line, update hashtable with dependents
 void parse_line(char *line, FileNode *hash_table[]) {
     char *colon = strchr(line, ':');
@@ -125,12 +143,16 @@ void parse_line(char *line, FileNode *hash_table[]) {
 
     // Ensure target is in the graph
     FileNode *target_node = get_or_create_file_node(target, hash_table);
+    if(target_node == NULL){
+        print_error("Unable to insert node into hash table when parsing the hash.dep file");
+        exit(1);
+    }
 
     // Parse dependencies and add edges
     char *dep = strtok(deps, " \t");
     while (dep) {
         FileNode *dep_node = get_or_create_file_node(dep, hash_table);
-        add_dependent(dep_node, target);  // dep_node → target
+        add_dependent(dep_node, target);  // dep_node -> target
         dep = strtok(NULL, " \t");
     }
 }
@@ -143,7 +165,7 @@ int parse_dependency_file(const char *filename, FileNode *hash_table[]) {
 
     FILE *fp = fopen(filename, "r");
     if (!fp) {
-        perror("Error opening dependency file");
+        print_error("Error opening dependency file");
         return 0;
     }
 
@@ -206,7 +228,6 @@ int load_hash_table(const char* dependency_list, FileNode *hash_table[]) {
     while (fgets(line, sizeof(line), fp)) {
         line[strcspn(line, "\n")] = 0;
         if (strlen(line) == 0) continue;
-
         parse_line(line, hash_table);
     }
     fclose(fp);
@@ -216,7 +237,7 @@ int load_hash_table(const char* dependency_list, FileNode *hash_table[]) {
 int save_hashes(const char *filename, FileNode *hash_table[]) {
     FILE *fp = fopen(filename, "w");
     if (!fp) {
-        perror("Failed to open file for saving hashes");
+        print_error("Failed to open file for saving hashes");
         return 0;
     }
 
@@ -235,19 +256,18 @@ int save_hashes(const char *filename, FileNode *hash_table[]) {
 void load_prev_hashes(const char *filename, HashEntry *prev_hash_table[]) {
     FILE *fp = fopen(filename, "r");
     if (!fp) {
-        // No cache file yet? That's fine.
+        // No cache file yet so we just return.
         return;
     }
 
     char fname[512];
     unsigned int hash;
 
-    for (int i = 0; i < HASH_TABLE_SIZE; i++)
-        prev_hash_table[i] = NULL;
+    for (int i = 0; i < HASH_TABLE_SIZE; i++) prev_hash_table[i] = NULL;
 
     while (fscanf(fp, "%511s %u", fname, &hash) == 2) {
         HashEntry *entry = malloc(sizeof(HashEntry));
-        entry->filename = strdup(fname);
+        entry->filename  = strdup(fname);
         entry->file_hash = hash;
 
         unsigned int idx = str_hash(fname);
@@ -384,7 +404,7 @@ void append_to_rebuild_list(FileNode **rebuild_list, const char *filename) {
 void mark_dependents_for_rebuild(const char *filename, FileNode *hash_table[], FileNode **rebuild_list, int *rebuild_cnt) {
     unsigned int idx = str_hash(filename);
     FileNode **pprev = &hash_table[idx];
-    FileNode *node = hash_table[idx];
+    FileNode *node   = hash_table[idx];
 
     while (node) {
         if (strcmp(node->filename, filename) == 0) {

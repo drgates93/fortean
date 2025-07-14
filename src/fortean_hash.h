@@ -69,4 +69,10 @@ void append_to_rebuild_list(FileNode **rebuild_list, const char *filename);
 // removing visited nodes from the hash_table
 void mark_dependents_for_rebuild(const char *filename, FileNode *hash_table[], FileNode **rebuild_list, int *rebuild_cnt);
 
+//Generic function to insert node
+void insert_node(const char *filename, FileNode *hash_table[]);
+
+//Generic function to check node. 
+int node_is_in_the_hashmap(const char *filename, FileNode *hash_table[]);
+
 #endif // FORTEAN_HASH_H
