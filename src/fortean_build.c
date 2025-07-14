@@ -337,7 +337,17 @@ int fortean_build_project_incremental(const int parallel_build, const int increm
         line = strtok(NULL, "\n");
     }
 
-    //For the incremental build, we parse the depenecy files and rebuild. 
+
+    //Define the rebuild count
+    int rebuild_cnt = 0;
+
+    // Compile each source in parallel if asked.
+    thread_t *threads;
+
+    //The most threads we can have is all of them so this is a safe allocation. 
+    if(parallel_build) threads = (thread_t*)malloc(src_count*sizeof(thread_t));
+
+    //For the incremental build, we parse the dependency files and rebuild. 
     if(incremental_build){
         strcat(maketop_cmd," -m");
         char *topo_make = run_command_capture(maketop_cmd);
@@ -347,7 +357,7 @@ int fortean_build_project_incremental(const int parallel_build, const int increm
         fprintf(depedency_chain,"%s",topo_make);
         fclose(depedency_chain);
 
-        //Parse the dependency file first (we always need it)
+        //Parse the dependency file first
         int res = parse_dependency_file(deps_file,cur_map);
         if(!res){
             print_error("Failed to make hash table of dependency graph\n");
@@ -368,7 +378,6 @@ int fortean_build_project_incremental(const int parallel_build, const int increm
 
         //Check the hash table for what we need to build.
         FileNode *rebuild_list = NULL;
-        int rebuild_cnt = 0;
         for (int i = 0; i < HASH_TABLE_SIZE; i++) {
             FileNode *node = cur_map[i];
             while (node) {
@@ -414,18 +423,30 @@ int fortean_build_project_incremental(const int parallel_build, const int increm
             snprintf(compile_cmd, sizeof(compile_cmd), "%s %s -J%s -c %s -o %s",
                      compiler, flags_str, mod_dir, src, obj_file);
 
-            print_info(compile_cmd);
-            int ret = system(compile_cmd);
-            if (ret != 0) {
-                print_error("Compilation failed.");
-                
-                //Free the topo make and rebuild list.
-                free(topo_make);
-                free(rebuild_list);
 
-                //Cleanup
-                goto cleanup_sources;
+            //Print the info
+            print_info(compile_cmd);
+
+            //Parallel build logic.
+            if(!parallel_build){
+                int ret = system(compile_cmd);
+                if (ret != 0) {
+                    print_error("Compilation failed.");
+                    free(topo_make);
+                    free(rebuild_list); 
+                    goto cleanup_sources;
+                }
+            }else{
+                //Copy the command to a per thread buffer to avoid conflicts. 
+                char *compile_cmd_ts = strdup(compile_cmd);
+                if (thread_create(&threads[rebuild_cnt++], compile_system_worker, compile_cmd_ts) != 0) {
+                    print_error("Failed to create thread");
+                    free(topo_make);
+                    free(rebuild_list); 
+                    goto cleanup_sources;
+                }
             }
+
             //Next node
             curr = curr->next;
         }
@@ -434,9 +455,6 @@ int fortean_build_project_incremental(const int parallel_build, const int increm
         free(topo_make);
         free(rebuild_list);
     }else{
-        // Compile each source
-        thread_t *threads;
-        if(parallel_build) threads = (thread_t*)malloc(src_count*sizeof(thread_t));
         for (int i = 0; i < src_count; i++) {
             const char *src      = sources[i];
             const char *rel_path = get_last_path_segment(src);
@@ -455,30 +473,35 @@ int fortean_build_project_incremental(const int parallel_build, const int increm
             snprintf(compile_cmd, sizeof(compile_cmd), "%s %s -J%s -c %s -o %s",
                      compiler, flags_str, mod_dir, src, obj_file);
 
+            //Print the info
+            print_info(compile_cmd);
+
+            //Check if we issue a sys call or spawn a thread to do it.
             if(!parallel_build){
-                print_info(compile_cmd);
                 int ret = system(compile_cmd);
                 if (ret != 0) {
                     print_error("Compilation failed.");
                     goto cleanup_sources;
                 }
             }else{
-                print_info(compile_cmd);
-                if (thread_create(&threads[i], compile_system_worker, compile_cmd) != 0) {
+                //Copy the command to a per thread buffer to avoid conflicts. 
+                char *compile_cmd_ts = strdup(compile_cmd);
+                if (thread_create(&threads[i], compile_system_worker, compile_cmd_ts) != 0) {
                     print_error("Failed to create thread");
                     goto cleanup_sources;
                 }
             }
         }
-
-        if(parallel_build){
-            // Wait for all threads to finish
-            for (int i = 0; i < src_count; i++) {
-                thread_join(threads[i]);
-            }
-        }
     }
 
+    
+    //If waiting on a parallel build, we finish up here by joining all the threads.
+    if(parallel_build){
+        int num_threads_spawned = (incremental_build) ? rebuild_cnt : src_count;
+        for (int i = 0; i < num_threads_spawned; i++) {
+            thread_join(threads[i]);
+        }
+    }
 
     //Check if we are building a library or not.
     const char* lib = fortean_toml_get_string(&cfg, "lib.target");
@@ -504,6 +527,8 @@ int fortean_build_project_incremental(const int parallel_build, const int increm
 
     link_pos += snprintf(link_cmd + link_pos, sizeof(link_cmd) - link_pos, "%s %s", compiler, flags_str);
 
+
+    //Link all the objects files. We check if the file exists to prevent issues...
     for (int i = 0; i < src_count; i++) {
         const char *src      = sources[i];
         const char *rel_path = get_last_path_segment(src);
@@ -520,6 +545,16 @@ int fortean_build_project_incremental(const int parallel_build, const int increm
         //just a list of all .o files we need in one place. This is much cleaner. 
         char obj_path[512];
         snprintf(obj_path, sizeof(obj_path), "%s%c%s.o", obj_dir, PATH_SEP, rel_path);
+
+        //Check if the obj file actually built and/or still exists.
+        if(!file_exists(obj_path)){
+            char msg[256];
+            snprintf(msg, sizeof(msg), "Object file %s does not exist.", obj_path);
+            print_error(msg);
+            return -1;
+        }
+
+
         link_pos += snprintf(link_cmd + link_pos, sizeof(link_cmd) - link_pos, " %s", obj_path);
     }
 
@@ -548,24 +583,26 @@ int fortean_build_project_incremental(const int parallel_build, const int increm
 
 
     //If we aren't on an incremental build, we need to dump everything
-    //to the .cache files here. 
+    //to the .cache files here for the first run. 
     if(!incremental_build){
          //For the incremental build, we parse the files!
         strcat(maketop_cmd," -m");
         char *topo_make = run_command_capture(maketop_cmd);
 
-        //Always rebuild the hash table when we are done. 
+        //Build the dependency table and save to file.
         FILE* depedency_chain = fopen(deps_file ,"w+");
         fprintf(depedency_chain,"%s",topo_make);
         fclose(depedency_chain);
 
-        //Parse the dependency file first (we always need it)
-        //It clears the existing hashmap by default. 
-        parse_dependency_file(deps_file,cur_map);
+        //Parse the dependency file first
+        int res = parse_dependency_file(deps_file,cur_map);
+        if(!res){
+            print_error("Failed to make hash table of dependency graph\n");
+            return -1;
+        }
 
-        //Save updated hash list for future runs
+        //Save hashes for the current state of the project. 
         save_hashes(hash_cache_file,cur_map);
-
     }
 
 

@@ -12,10 +12,10 @@
 #include "fortean_toml.h"
 
 #ifdef _WIN32
-    #include <direct.h>
-    #include <windows.h>
     #define MKDIR(path) _mkdir(path)
     #define PATH_SEP '\\'
+    #include <direct.h>
+    #include <windows.h>
 #else
     #define MKDIR(path) mkdir(path, 0755)
     #define PATH_SEP '/'
@@ -485,9 +485,7 @@ int main(int argc, char *argv[]) {
             //Might be the bin folder later on. 
             int bin_index         = return_index_for_key(&args.args_map, "--bin");
             const char* exe_name  = return_key_for_index(&args.args_map, bin_index+1);
-            if(exe_name != NULL){
-                target = exe_name;
-            }
+            if(exe_name != NULL) target = exe_name;
         }
 
         char exe[512];
@@ -517,9 +515,6 @@ int main(int argc, char *argv[]) {
                 return -1;
             }
         }
-
-        //Safely exit
-        return 0;
     }
-    return 1;
+    return 0;
 }
