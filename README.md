@@ -44,7 +44,7 @@ fortean run <project-name>      # Build and run the executable
 | ----------------- | ---------------------------------- |
 | `-j`              | Enable parallel build              |
 | `-r`, `--rebuild` | Disable incremental build          |
-| `--bin`           | Skip build and run existing binary |
+| `--bin`           | Skip build and run target bin given by name |
 | `--lib`           | Force build of library only        |
 
 ---
